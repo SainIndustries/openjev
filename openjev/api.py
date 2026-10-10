@@ -1,4 +1,5 @@
 """Jev-compatible HTTP API: POST /v1/systemone and GET /v1/models.
+POST /v1/decisions (openjev.decisions) answers OpenAI's Decisions API with the same read.
 
 Request, response and error shapes follow TypeSafe's published OpenAPI 0.2.0,
 so their SDKs work against this server by pointing TYPESAFE_BASE_URL at it.
@@ -25,11 +26,12 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from . import __version__
 from .chat import Generator, MlxGenerator, add_chat_routes
 from .config import ENCODER_MODELS, Settings, served_models
+from .decisions import DecisionRequest, oai_error_body, param_of, to_decision, to_systemone
 from .engine import Engine, Overloaded, SchemaError, Upstream, model_ns
 
 JSONContent = Union[str, dict[str, Any], list[Any]]
@@ -241,10 +243,12 @@ def create_app(settings=None, tokenizer=None):
     async def models():
         return {"models": models_list}
 
-    @app.post("/v1/systemone")
-    async def systemone(req: SystemOneRequest, request: Request):
+    async def answer(req: SystemOneRequest, request: Request, body=None):
+        """Answer a Jev request: its response body, or an error response in Jev's shapes.
+        /v1/systemone sends either as is; /v1/decisions translates both, and passes the
+        Jev ``body`` a routed model's container is sent in place of its own."""
         if req.model in settings.model_routes and req.model not in model_names:
-            return await forward(request, settings.model_routes[req.model])
+            return await forward(request, settings.model_routes[req.model], body)
         if req.model not in model_names:
             # Jev's shape for a model it doesn't serve
             return error(400, "api_usage_error", f"Unknown model: {req.model}")
@@ -274,6 +278,41 @@ def create_app(settings=None, tokenizer=None):
         return {"model": model_version, "answers": answers,
                 "usage": {"input_tokens": input_tokens, "output_tokens": thought_tokens}}
 
+    @app.post("/v1/systemone")
+    async def systemone(req: SystemOneRequest, request: Request):
+        return await answer(req, request)
+
+    @app.post("/v1/decisions")
+    async def decisions(request: Request):
+        """OpenAI's Decisions API over the same read (openjev.decisions)."""
+        try:
+            body = json.loads(await request.body())
+            req = DecisionRequest.model_validate(body)
+            jev_body = to_systemone(req)
+            jev = SystemOneRequest.model_validate(jev_body)
+        except ValueError as e:  # bad JSON, a ValidationError, or a SchemaError
+            if isinstance(e, ValidationError):
+                first = e.errors()[0]
+                loc, msg = first.get("loc", ()), first.get("msg", "Invalid request.")
+            elif isinstance(e, SchemaError):
+                loc, msg = e.loc, str(e)
+            else:
+                loc, msg = (), "The request body is not valid JSON."
+            log_invalid(request, [f"{'.'.join(str(p) for p in loc)}: {msg}"], status=400)
+            return JSONResponse({"error": {"message": msg, "type": "invalid_request_error",
+                                           "param": param_of(loc), "code": None}}, status_code=400)
+        result = await answer(jev, request, json.dumps(jev_body).encode())
+        if not isinstance(result, Response):
+            return to_decision(req, result)
+        try:
+            payload = json.loads(result.body)
+        except ValueError:
+            payload = None
+        if result.status_code == 200 and isinstance(payload, dict) and "answers" in payload:
+            return to_decision(req, payload)  # answered by a routed container
+        keep = {h: result.headers[h] for h in ("retry-after",) if h in result.headers}
+        return JSONResponse(oai_error_body(result.status_code, payload), status_code=result.status_code, headers=keep)
+
     if not encoder:
         add_chat_routes(app)
 
@@ -283,13 +322,17 @@ def create_app(settings=None, tokenizer=None):
 FORWARD_HEADERS = ("authorization", "x-origin-secret", "content-type")
 
 
-async def forward(request, url):
+async def forward(request, url, content=None):
     """Pass a request through to the container serving its model, and its answer back
-    unchanged: that container applies the same contract and its own auth."""
+    unchanged: that container applies the same contract and its own auth. ``content``
+    replaces the body, for a request that arrived in another API's words."""
     headers = {h: request.headers[h] for h in FORWARD_HEADERS if h in request.headers}
+    if content is not None:
+        headers["content-type"] = "application/json"
     started = time.perf_counter_ns()
     try:
-        r = await request.app.state.routes.post(url + "/v1/systemone", content=await request.body(), headers=headers)
+        r = await request.app.state.routes.post(url + "/v1/systemone", content=content or await request.body(),
+                                                headers=headers)
     except httpx.HTTPError as e:
         return error(503, "api_error", f"inference backend unavailable: {type(e).__name__}", {"retry-after": "2"})
     finally:
