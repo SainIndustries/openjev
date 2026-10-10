@@ -119,6 +119,60 @@ def test_an_image_prefill_reads_the_same_cold_or_reused(client):
         ask(client, body["state"], COLOUR, images=body["images"], samples=3)
 
 
+# QUESTIONS as OpenAI's Decisions API asks them, in the same order
+DECISION_QUESTIONS = [
+    {"type": "predicate", "name": "urgent", "instructions": "Does the customer need a reply within the hour?"},
+    {"type": "choice", "name": "team", "instructions": "Which team should handle it?",
+     "choices": [{"value": "outage", "description": "service down"}, {"value": "billing", "description": "charges, refunds"},
+                 {"value": "feature", "description": "requests, how-to"}]},
+    {"type": "score", "name": "tone", "instructions": "How upset is the customer?",
+     "levels": [{"label": "calm"}, {"label": "annoyed"}, {"label": "furious"}]},
+]
+
+
+def decide(client, input, questions=DECISION_QUESTIONS):
+    r = client.post("/v1/decisions", json={"model": "openjev-latest", "input": input, "questions": questions})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_decisions_answer_the_readme_example(client):
+    for state, (urgent, team, tone) in STATES.items():
+        body = decide(client, state)
+        a = {x["name"]: x for x in body["answers"]}
+        assert [x["type"] for x in body["answers"]] == ["predicate", "choice", "score"]
+        assert (a["urgent"]["probability"] > 0.9) == urgent and (a["urgent"]["probability"] < 0.1) != urgent, (state, a)
+        assert a["team"]["choice"] == team and a["team"]["confidence"] > 0.9, (state, a["team"])
+        assert abs(a["tone"]["score"] - tone) < 0.25, (state, a["tone"])
+        assert abs(sum(p["probability"] for p in a["team"]["probabilities"]) - 1) < 1e-6
+        assert body["usage"]["input_tokens"] > 100 and body["usage"]["total_tokens"] == body["usage"]["input_tokens"]
+
+
+def test_a_decision_is_the_same_read_as_systemone(client):
+    """Keyed by position, as /v1/decisions keys them, the Jev request is the same
+    read with the same seed: the answers match to the bit."""
+    state = next(iter(STATES))
+    jev = ask(client, state, {str(i): q for i, q in enumerate(QUESTIONS.values())})
+    urgent, team, tone = decide(client, state)["answers"]
+    assert urgent["probability"] == jev["answers"]["0"]["noul"]
+    assert team["choice"] == jev["answers"]["1"]["choice"] and team["confidence"] == jev["answers"]["1"]["confidence"]
+    assert {p["value"]: p["probability"] for p in team["probabilities"]} == jev["answers"]["1"]["probabilities"]
+    assert tone["score"] == jev["answers"]["2"]["score"]
+    assert [p["probability"] for p in tone["probabilities"]] == list(jev["answers"]["2"]["probabilities"].values())
+
+
+def test_a_decision_reads_an_image(client):
+    question = [{"type": "choice", "name": "colour", "instructions": "What colour fills the picture?",
+                 "choices": [{"value": c, "description": f"the image is {c}"} for c in ("red", "blue", "green")]}]
+    for colour, rgb in (("red", (255, 0, 0)), ("blue", (0, 0, 255))):
+        body = decide(client, [{"role": "user", "content": [
+            {"type": "input_image", "image_url": solid_png(rgb)}, {"type": "input_text", "text": "What colour is this?"}]}],
+            question)
+        a = body["answers"][0]
+        assert a["choice"] == colour and a["confidence"] > 0.5, (colour, a)
+        assert body["usage"]["input_tokens"] > 100
+
+
 def test_many_questions_chunk_and_run_in_sequence(client):
     qs = {f"k{i}": {"type": "noul", "instructions": f"The message mentions the number {i}"} for i in range(24)}
     state = "The numbers I care about are 3, 11 and 20."
