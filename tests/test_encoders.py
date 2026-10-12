@@ -344,7 +344,7 @@ class StubVllm:
 def jevk5_client(monkeypatch):
     pytest.importorskip("jevk5")
     stub = StubVllm()
-    monkeypatch.setattr(encoders, "jevk5_temperature", lambda model: 2.0)
+    monkeypatch.setattr(encoders, "jevk5_config", lambda model: {"temperature": 2.0, "knockout_temperature": 0.93})
     client = httpx.Client
     monkeypatch.setattr(encoders.httpx, "Client", lambda **kw: client(
         transport=httpx.MockTransport(lambda req: stub(req)), base_url=kw["base_url"]))
@@ -360,7 +360,7 @@ def softmax_t(logprobs, t=2.0):
 
 
 def test_jevk5_reads_letters_under_its_temperature(jevk5_client):
-    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.2"))
+    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.3"))
     assert r.status_code == 200, r.text
     body = r.json()
     a = body["answers"]
@@ -381,23 +381,34 @@ def test_jevk5_reads_letters_under_its_temperature(jevk5_client):
 
 def test_jevk5_reads_more_than_16_options_in_passes(jevk5_client):
     q = {"c": {"type": "choice", "instructions": "Which?", "criteria": {f"o{i}": f"option {i}" for i in range(20)}}}
-    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.2", questions=q))
+    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.3", questions=q))
     p = r.json()["answers"]["c"]["probabilities"]
     assert list(p) == [f"o{i}" for i in range(20)] and sum(p.values()) == pytest.approx(1.0)
     assert len(jevk5_client.stub.completions) == 3  # two groups of 10, then a final
     assert r.json()["usage"]["input_tokens"] == 300
 
 
+def test_jevk5_knockout_uses_the_checkpoints_temperature(jevk5_client, monkeypatch):
+    import jevk5.prompt
+
+    seen = []
+    spread = jevk5.prompt.spread
+    monkeypatch.setattr(jevk5.prompt, "spread", lambda *a: seen.append(a[2:]) or spread(*a))
+    q = {"c": {"type": "choice", "instructions": "Which?", "criteria": {f"o{i}": None for i in range(20)}}}
+    assert jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.3", questions=q)).status_code == 200
+    assert seen == [("knockout", 0.93)]
+
+
 def test_jevk5_model_rejection_is_a_400(jevk5_client):
     jevk5_client.stub.status = 400
-    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.2"))
+    r = jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.3"))
     assert r.status_code == 400
     assert "maximum context length" in json.dumps(r.json())
 
 
 def test_jevk5_unreachable_vllm_is_a_503(jevk5_client):
     jevk5_client.stub.status = None
-    assert jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.2")).status_code == 503
+    assert jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.3")).status_code == 503
 
 
 # Clef: Cloudflare's joint_schema_model and vLLM stubbed with their contracts as ClefEngine uses them.

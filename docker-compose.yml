@@ -14,7 +14,7 @@ services:
       OPENJEV_GPU_UTIL: ${OPENJEV_GPU_UTIL:-0.9}
       OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}
       OPENJEV_ORIGIN_SECRET: ${OPENJEV_ORIGIN_SECRET:-}
-      # with the clm or jevk5 profile, add clm-v0.1=http://clm:8080 or jevk5-0.2=http://jevk5:8080
+      # with the clm or jevk5 profile, add clm-v0.1=http://clm:8080 or jevk5-0.3=http://jevk5:8080
       OPENJEV_MODEL_ROUTES: ${OPENJEV_MODEL_ROUTES:-laya-1.0=http://laya:8080,verdict-1.4=http://verdict:8080}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
@@ -72,10 +72,10 @@ services:
     restart: unless-stopped
 
   # JevK5 runs its own vLLM too (bf16, 8.4 GB of weights): start it with --profile jevk5 and add
-  # jevk5-0.2=http://jevk5:8080 to OPENJEV_MODEL_ROUTES, leaving it room as for CLM.
+  # jevk5-0.3=http://jevk5:8080 to OPENJEV_MODEL_ROUTES, leaving it room as for CLM.
   jevk5:
     build: {context: ., dockerfile: docker/Dockerfile.jevk5}
-    image: razorback16/openjev-jevk5:0.7.0
+    image: razorback16/openjev-jevk5:0.7.1
     profiles: [jevk5]
     environment:
       <<: *encoder-env

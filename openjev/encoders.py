@@ -22,8 +22,8 @@ the answer shapes are shared with the vLLM backend; only the read differs.
   to 512-d) over the last-token embeddings of a frozen Qwen3-8B. The embeddings
   come from vLLM's pooling runner in the same container; the heads, the prompt
   layout and the scoring are the `contrastive-lm` package's own.
-- jevk5-0.2: JevK5 by Alibi Serikbay (github.com/allebee/jevk5, Apache-2.0),
-  checkpoint alibiserikbay/JevK5: Qwen3.5-4B with a merged, distilled LoRA. A
+- jevk5-0.3: JevK5 by Alibi Serikbay (github.com/allebee/jevk5, Apache-2.0),
+  checkpoint alibiserikbay/JevK5 (v0.3): Qwen3.5-4B with a merged, distilled LoRA. A
   question's options are lettered A-P in a JSON prompt, and the answer is a
   softmax over those letters' next-token logits under one calibration temperature
   (SemIf's readout). vLLM in the same container returns the letters' logprobs;
@@ -369,7 +369,7 @@ class ClmEngine(EncoderEngine):
 
 
 class JevK5Engine(EncoderEngine):
-    model_name = "jevk5-0.2"
+    model_name = "jevk5-0.3"
 
     def __init__(self, settings):
         # As for CLM, the model is the vLLM server. The questions of one request are read at
@@ -387,7 +387,10 @@ class JevK5Engine(EncoderEngine):
 
         self.http = httpx.Client(base_url=self.s.upstream, timeout=httpx.Timeout(300.0, connect=5.0),
                                  limits=httpx.Limits(max_connections=self.workers))
-        self.temperature = jevk5_temperature(self.s.jevk5_model)
+        config = jevk5_config(self.s.jevk5_model)
+        self.temperature = float(config["temperature"])
+        # the sharpening of a knockout over more than 16 options; jevk5's own default without it
+        self.knockout_temperature = config.get("knockout_temperature")
         # Each answer letter must be one token, as jevk5's own runtime checks
         ids = [self._post("/tokenize", {"model": self.s.upstream_model, "prompt": letter,
                                         "add_special_tokens": False})["tokens"] for letter in LETTERS]
@@ -434,7 +437,7 @@ class JevK5Engine(EncoderEngine):
             return [v / sum(w) for v in w]
 
         # more than 16 options take several passes, combined as jevk5 combines them
-        return spread(read, [text for _, text in options]), tokens
+        return spread(read, [text for _, text in options], "knockout", self.knockout_temperature), tokens
 
     def read(self, state, qs):
         """[probabilities per question, in the caller's option order], input tokens. jevk5 keeps
@@ -444,15 +447,16 @@ class JevK5Engine(EncoderEngine):
         return [p for p, _ in out], sum(t for _, t in out)
 
 
-def jevk5_temperature(model):
-    """The calibration temperature stored with the weights (1.532 for JevK5 v0.2)."""
+def jevk5_config(model):
+    """jevk5_config.json, stored with the weights: the calibration temperature, and the knockout's
+    (1.22 and 0.93 for JevK5 v0.3)."""
     path = os.path.join(model, "jevk5_config.json")
     if not os.path.isfile(path):
         from huggingface_hub import hf_hub_download
 
         path = hf_hub_download(model, "jevk5_config.json")
     with open(path) as f:
-        return float(json.load(f)["temperature"])
+        return json.load(f)
 
 
 # The default checkpoints, mixed NVFP4/FP8 quantizations checked against the bf16 release on text

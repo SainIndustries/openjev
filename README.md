@@ -26,7 +26,7 @@ OpenJev is an independent project. It is not affiliated with or endorsed by Type
 | `laya-1.0` | [Laya](https://github.com/NandhaKishorM/laya) by Nandakishor M / Convai Innovations | 421M | text, 1,024 tokens | up to 255 | PyTorch, GPU or CPU |
 | `verdict-1.4` | [Verdict](https://github.com/Heman10x-NGU/Verdict-open-jev) by Heman10x | 151M | text, 512 tokens | up to 24 | PyTorch, GPU or CPU |
 | `clm-v0.1` | [CLM](https://github.com/Contrastive-LM/CLM) by Contrastive-LM: contrastive heads over Qwen3-8B | 8B + 2 × 9.4M | text, 2,048 tokens | up to 255 | vLLM (NVIDIA GPU) |
-| `jevk5-0.2` | [JevK5](https://github.com/allebee/jevk5) by Alibi Serikbay: Qwen3.5-4B with a distilled LoRA, read by its answer letters | 4B | text, 16,384 tokens | up to 255 | vLLM (NVIDIA GPU) |
+| `jevk5-0.3` | [JevK5](https://github.com/allebee/jevk5) by Alibi Serikbay: Qwen3.5-4B with a distilled LoRA, read by its answer letters | 4B | text, 16,384 tokens | up to 255 | vLLM (NVIDIA GPU) |
 | `clef-1.0` | [Clef](https://huggingface.co/Cloudflare/clef) by Cloudflare: Qwen3.8-27B with a joint schema head, NVFP4 | 27B | text and images, 16,384 tokens | up to 255 | vLLM (NVIDIA Blackwell) |
 | `clef-flash-1.0` | [Clef-flash](https://huggingface.co/Cloudflare/clef-flash) by Cloudflare: Clef on Qwen3.5-9B, NVFP4 | 9B | text and images, 16,384 tokens | up to 255 | vLLM (NVIDIA Blackwell) |
 
@@ -495,17 +495,18 @@ questions on your own data before you rely on them.
 ### JevK5
 
 [JevK5](https://github.com/allebee/jevk5) is Alibi Serikbay's model; the credit is theirs. The
-[JevK5](https://huggingface.co/alibiserikbay/JevK5) checkpoint (v0.2) is Qwen3.5-4B with a LoRA
-distilled from Qwen3.6-27B, merged. Each question becomes a JSON prompt with its options lettered
-A to P, and the answer is a softmax over those letters' next-token logits under one calibration
-temperature (1.532, from the checkpoint's `jevk5_config.json`). The readout is
+[JevK5](https://huggingface.co/alibiserikbay/JevK5) checkpoint (v0.3) is Qwen3.5-4B with a LoRA
+distilled from Qwen3.6-27B and GPT-6 Luna, merged. Each question becomes a JSON prompt with its
+options lettered A to P, and the answer is a softmax over those letters' next-token logits under
+one calibration temperature (1.22, from the checkpoint's `jevk5_config.json`). The readout is
 [SemIf's](https://github.com/TheoLeeCJ/SemIf). A question with more than 16 options takes several
-passes, combined as JevK5 combines them.
+passes, combined as JevK5 combines them, with the knockout's own temperature from the same file
+(0.93).
 
 The `jevk5` image (`docker/Dockerfile.jevk5`) runs the checkpoint in bf16 on vLLM (the commit in
 [Caveats](#caveats)) and asks it for the letters' logprobs. The prompt
 and the combining of passes come from JevK5's own [`jevk5`](https://github.com/allebee/jevk5)
-package (0.2.2). JevK5's own server reads one question at a time; here vLLM batches the questions
+package (0.3.3). JevK5's own server reads one question at a time; here vLLM batches the questions
 of all requests together.
 
 ```bash
@@ -515,13 +516,14 @@ docker run -d --gpus all --ipc host -p 127.0.0.1:8084:8080 \
 ```
 
 Next to DiffusionGemma, run `docker compose --profile jevk5 up -d` and add
-`jevk5-0.2=http://jevk5:8080` to `OPENJEV_MODEL_ROUTES`, as for CLM. `OPENJEV_JEVK5_GPU_UTIL`
+`jevk5-0.3=http://jevk5:8080` to `OPENJEV_MODEL_ROUTES`, as for CLM. `OPENJEV_JEVK5_GPU_UTIL`
 (default 0.12) is its share of the GPU.
 
-On JevBench's 231 public items, OpenJev and JevK5's own published v0.2 run gave the same top
-answer on all 231 and the same input token count on all 231, so the prompts are identical.
-Probabilities differed by 0.0012 at the median and 0.055 at most (vLLM's kernels are not
-transformers'). Both scored 86.6%.
+On JevBench's 231 public items, OpenJev and JevK5's own published v0.3 run gave the same input
+token count on all 231, so the prompts are identical, and the same top answer on 230. The other
+is an exact 50/50 tie, broken the other way. Probabilities differed by 0.0002 at the median and
+0.027 at most (vLLM's kernels are not transformers'). OpenJev scored 87.4%, JevK5's run 87.9%
+(the tie). None of these items has more than 16 options.
 
 Measured on one RTX 3090 at `OPENJEV_GPU_UTIL=0.85` (7.9 GB of weights, 284k KV tokens), with the
 same requests as for CLM:
@@ -603,7 +605,7 @@ Laya, Verdict, CLM and JevK5 take text only: `images`, `steps` above 1, `samples
 | `laya-1.0` | 1,024 tokens, options included | is cut, with no error | what the model read. Each question reads the state again |
 | `verdict-1.4` | 512 tokens, options included | is cut, with no error | what the model read. Each question reads the state again |
 | `clm-v0.1` | 2,048 tokens | loses its start, so the question (which comes last) survives. Upstream CLM cuts the end ([CLM PR #6](https://github.com/Contrastive-LM/CLM/pull/6)) | only the texts it had to embed, so a repeated request reports 0 |
-| `jevk5-0.2` | 16,384 tokens | gets a 400, never a cut | every pass, as JevK5 does. Each question reads the state again |
+| `jevk5-0.3` | 16,384 tokens | gets a 400, never a cut | every pass, as JevK5 does. Each question reads the state again |
 | `clef-1.0`, `clef-flash-1.0` | 16,384 tokens, images and questions included | loses its end, as Cloudflare's code cuts it, with no error. Questions or images that fill the window alone get a 400 | the one read, images included |
 
 ### Settings

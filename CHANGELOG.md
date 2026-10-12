@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1 (2026-10-12)
+
+Only `openjev-jevk5` is released at 0.7.1; the other images stay at 0.7.0.
+
+- JevK5 moves to v0.3, the checkpoint alibiserikbay/JevK5 now publishes (since 2026-09-25), and
+  its id is `jevk5-0.3`; `jevk5-0.2` is no longer served. The image installs `jevk5` 0.3.3, whose
+  prompt is unchanged, and a question with more than 16 options now uses the checkpoint's
+  `knockout_temperature`, as JevK5's own runtime does. On JevBench's 231 public items OpenJev
+  matches JevK5's published v0.3 run: the same input tokens on all 231 and the same top answer
+  on 230 (the other is an exact tie).
+
 ## 0.7.0 (2026-10-12)
 
 All five images (`openjev`, `openjev-laya`, `openjev-verdict`, `openjev-clm`, `openjev-jevk5`) are

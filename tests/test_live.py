@@ -5,7 +5,7 @@
 Set OPENJEV_API_KEY or OPENJEV_ORIGIN_SECRET too if the server wants one. Set OPENJEV_LIVE_GATEWAY=1 when a gateway
 (such as codiv's) sits in front and strips `Server-Timing`. Run it after building an image or
 before a cutover. The DiffusionGemma checks run when the server lists `openjev-latest`;
-the encoder checks run for whichever of `laya-1.0`, `verdict-1.4`, `clm-v0.1` and `jevk5-0.2` it lists.
+the encoder checks run for whichever of `laya-1.0`, `verdict-1.4`, `clm-v0.1` and `jevk5-0.3` it lists.
 """
 import base64
 import concurrent.futures
@@ -151,7 +151,7 @@ def test_chat_stream(client, models):
     assert text.strip()
 
 
-@pytest.mark.parametrize("model", ["laya-1.0", "verdict-1.4", "clm-v0.1", "jevk5-0.2"])
+@pytest.mark.parametrize("model", ["laya-1.0", "verdict-1.4", "clm-v0.1", "jevk5-0.3"])
 def test_encoder(client, models, model):
     if model not in models:
         pytest.skip(f"the server does not serve {model}")

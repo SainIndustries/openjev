@@ -1,4 +1,4 @@
-# JevK5 (jevk5-0.2): vLLM serves alibiserikbay/JevK5 (Qwen3.5-4B, bf16) on 127.0.0.1:8000, and the
+# JevK5 (jevk5-0.3): vLLM serves alibiserikbay/JevK5 (Qwen3.5-4B, bf16) on 127.0.0.1:8000, and the
 # API server reads each question's answer letters from it. Build docker/Dockerfile.base first.
 #   docker build -f docker/Dockerfile.jevk5 -t razorback16/openjev-jevk5 .
 #
@@ -9,8 +9,8 @@ FROM ${BASE_IMAGE}
 
 ARG VLLM_REPO=https://github.com/vllm-project/vllm
 ARG VLLM_COMMIT=1b3b88ec2b7457aa030db4d0e7d8aaf04f6d0fb8
-# JevK5 0.2.2 (tag v0.2.2); not on PyPI
-ARG JEVK5_COMMIT=0571ef373722dd10cace82c81580d7b675fe6b53
+# JevK5 0.3.3 (tag v0.3.3); not on PyPI. Its prompt is v0.2.2's; v0.3 adds knockout_temperature.
+ARG JEVK5_COMMIT=f944fe37ff1d5ed3830aa4c8d88b7189c8c1268a
 
 RUN git clone --filter=blob:none "$VLLM_REPO" /opt/vllm && git -C /opt/vllm checkout "$VLLM_COMMIT" \
     && cd /opt/vllm && VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT="$VLLM_COMMIT" \

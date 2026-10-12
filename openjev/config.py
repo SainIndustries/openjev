@@ -162,9 +162,9 @@ ENCODER_MODELS = {
                            "projection heads over Qwen3-8B last-token embeddings, here with Qwen3-8B-FP8 on vLLM. "
                            "Text only, 2,048 tokens.",
             "release_date": "2026-09-24"},
-    "jevk5": {"name": "jevk5-0.2",
-              "description": "JevK5 v0.2 by Alibi Serikbay (github.com/allebee/jevk5, Apache-2.0): Qwen3.5-4B with a "
-                             "LoRA distilled from Qwen3.6-27B, merged, read as a softmax over the answer letters' "
+    "jevk5": {"name": "jevk5-0.3",
+              "description": "JevK5 v0.3 by Alibi Serikbay (github.com/allebee/jevk5, Apache-2.0): Qwen3.5-4B with a "
+                             "LoRA distilled from Qwen3.6-27B and GPT-6 Luna, merged, read as a softmax over the answer letters' "
                              "logits (SemIf's readout), on vLLM. Text only, 16,384 tokens.",
               "release_date": "2026-09-25"},
     "clef": {"name": "clef-1.0",
