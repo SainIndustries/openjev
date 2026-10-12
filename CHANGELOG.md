@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `POST /v1/decisions` serves OpenAI's
+  [Decisions API](https://developers.openai.com/api/docs/guides/decisions), so the OpenAI SDKs'
+  `client.decisions.create` works against OpenJev. A decision is translated into a
+  `/v1/systemone` request and read the same way, so the same questions get the same answers, on
+  every backend and through `OPENJEV_MODEL_ROUTES`. Its errors use OpenAI's shape.
+
 ## 0.6.0 (2026-10-06)
 
 - vLLM is pinned to upstream main at

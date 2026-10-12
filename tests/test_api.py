@@ -3,6 +3,7 @@ import asyncio
 import json as _json
 import math
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from transformers import AutoTokenizer
@@ -537,3 +538,126 @@ def test_model_time_reaches_the_response_from_parallel_reads():
         return spent[0]
 
     assert asyncio.run(main()) == 15
+
+
+DECISION = {  # the Decisions guide's shapes: a predicate, a choice and a score
+    "model": "openjev-latest",
+    "input": EXAMPLE["state"],
+    "questions": [
+        {"type": "choice", "name": "department", "instructions": "Which team should handle this",
+         "choices": [{"value": "billing", "description": "Payment or subscription issues"},
+                     {"value": "technical", "description": "Bugs or integration problems"},
+                     {"value": "sales", "description": "Pricing or account questions"}]},
+        {"type": "score", "name": "frustration", "instructions": "How frustrated the customer appears",
+         "levels": [{"label": "calm", "description": "Just stating facts"},
+                    {"label": "frustrated", "description": "Frustrated but civil"},
+                    {"label": "angry"}]},
+        {"type": "predicate", "name": "is_urgent", "instructions": "The message conveys urgency or time-sensitivity"},
+    ],
+}
+
+
+def test_decision_decodes_with_openai_sdk(client):
+    decision = pytest.importorskip("openai.types.decision")
+    r = client.post("/v1/decisions", json=DECISION)
+    assert r.status_code == 200, r.text
+    body = decision.Decision.model_validate_json(r.content)
+    assert body.model == "openjev-0.1"
+    department, frustration, urgent = body.answers
+    assert (department.type, department.name, department.choice) == ("choice", "department", "billing")
+    assert [p.value for p in department.probabilities] == ["billing", "technical", "sales"]
+    assert math.isclose(department.probabilities[0].probability, 0.7)
+    assert frustration.type == "score" and math.isclose(frustration.score, 0.15 * 1 + 0.15 * 2)
+    assert [(p.value, p.label) for p in frustration.probabilities] == [(0, "calm"), (1, "frustrated"), (2, "angry")]
+    assert urgent.type == "predicate" and round(urgent.probability, 6) in (0.3, 0.7)  # the stub flips on odd seeds
+    assert body.usage.input_tokens == body.usage.total_tokens == 123 and body.usage.output_tokens == 0
+    # names, values and labels stay out of the prompt the way Jev ids do; levels are read with their descriptions
+    assert "department" not in client.reads[0] and "frustration" not in client.reads[0]
+    assert "calm: Just stating facts" in client.reads[0] and "Payment or subscription issues" in client.reads[0]
+
+
+def test_decision_reads_like_the_same_systemone_request(client):
+    """A decision is a Jev request in other words: the same read, the same answers."""
+    client.post("/v1/decisions", json=DECISION)
+    client.post("/v1/systemone", json=dict(EXAMPLE, model="openjev-latest", questions={
+        "0": {"type": "choice", "instructions": "Which team should handle this",
+              "criteria": {"billing": "Payment or subscription issues", "technical": "Bugs or integration problems",
+                           "sales": "Pricing or account questions"}},
+        "1": {"type": "score", "instructions": "How frustrated the customer appears",
+              "criteria": ["calm: Just stating facts", "frustrated: Frustrated but civil", "angry"]},
+        "2": {"type": "noul", "instructions": "The message conveys urgency or time-sensitivity"}}))
+    assert client.reads[0] == client.reads[1]
+    assert client.calls[0]["seed"] == client.calls[1]["seed"]
+
+
+def test_decision_input_messages_and_images(client):
+    body = dict(DECISION, input=[
+        {"role": "user", "content": [{"type": "input_image", "image_url": f"data:image/png;base64,{PNG}"},
+                                     {"type": "input_text", "text": "first"}]},
+        {"type": "message", "role": "user", "content": "second"}])
+    r = client.post("/v1/decisions", json=body)
+    assert r.status_code == 200, r.text
+    content = client.calls[0]["content"]
+    assert [p["type"] for p in content] == ["image_url", "text"]
+    assert content[1]["text"] == "first\n\nsecond"
+
+
+def test_decision_unnamed_questions_and_typed_choices(client):
+    body = dict(DECISION, questions=[
+        {"type": "predicate", "instructions": "Is it urgent?"},
+        {"type": "choice", "instructions": "Is it a bug?",
+         "choices": [{"value": True}, {"value": "true"}, {"value": False}]}])
+    r = client.post("/v1/decisions", json=body)
+    assert r.status_code == 200, r.text
+    predicate, choice = r.json()["answers"]
+    assert "name" not in predicate and "name" not in choice
+    assert choice["choice"] is True  # the first option, the boolean, not the string "true"
+    assert [p["value"] for p in choice["probabilities"]] == [True, "true", False]
+
+
+def test_decision_errors_are_openai_shaped(client):
+    def err(body, status=400):
+        r = client.post("/v1/decisions", json=body)
+        assert r.status_code == status, r.text
+        assert set(r.json()["error"]) == {"message", "type", "param", "code"}
+        return r.json()["error"]
+
+    assert err({"model": "openjev-latest", "questions": DECISION["questions"]})["param"] == "input"
+    assert err(dict(DECISION, questions=[]))["param"] == "questions"
+    assert err(dict(DECISION, questions=[{"type": "rank", "instructions": "x"}]))["type"] == "invalid_request_error"
+    assert "Unknown model" in err(dict(DECISION, model="gpt-6-luna"))["message"]
+    dup = [{"type": "predicate", "name": "a", "instructions": "x"}] * 2
+    assert err(dict(DECISION, questions=dup))["param"] == "questions.1.name"
+    same = [{"type": "choice", "instructions": "x", "choices": [{"value": "a"}, {"value": "a"}]}]
+    assert err(dict(DECISION, questions=same))["param"] == "questions.0.choices"
+    levels = [{"type": "score", "instructions": "x", "levels": [{"label": str(i)} for i in range(11)]}]
+    assert "at most 10 levels" in err(dict(DECISION, questions=levels))["message"]
+    hosted = [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.com/a.png"}]}]
+    assert err(dict(DECISION, input=hosted))["param"] == "input.0.content.0"
+    assert err(dict(DECISION, input=[{"role": "system", "content": "x"}]))["param"] == "input.0.role"
+    r = client.post("/v1/decisions", content=b"{", headers={"content-type": "application/json"})
+    assert r.status_code == 400 and r.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_decision_for_a_routed_model_is_sent_as_systemone(tok, monkeypatch):
+    monkeypatch.setenv("OPENJEV_MODEL_ROUTES", "verdict-1.4=http://verdict:8080")
+    seen = []
+
+    def handler(req):
+        seen.append(_json.loads(req.content))
+        return httpx.Response(200, json={"model": "verdict-1.4", "usage": {"input_tokens": 9, "output_tokens": 0},
+                                         "answers": {"0": {"type": "noul", "noul": 0.25}}})
+
+    with TestClient(create_app(Settings(), tokenizer=tok)) as c:
+        c.app.state.routes = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        q = [{"type": "predicate", "name": "urgent", "instructions": "Is it urgent?"}]
+        r = c.post("/v1/decisions", json=dict(DECISION, model="verdict-1.4", questions=q))
+        assert r.status_code == 200, r.text
+        assert seen[0]["questions"] == {"0": {"type": "noul", "instructions": "Is it urgent?"}}
+        assert r.json()["answers"] == [{"type": "predicate", "name": "urgent", "probability": 0.25}]
+        assert r.json()["model"] == "verdict-1.4" and r.json()["usage"]["input_tokens"] == 9
+        # the routed container's errors come back in OpenAI's shape too
+        c.app.state.routes = httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda req: httpx.Response(400, json={"detail": "Too many choices. Must have at most 24 choices."})))
+        r = c.post("/v1/decisions", json=dict(DECISION, model="verdict-1.4", questions=q))
+        assert r.status_code == 400 and r.json()["error"]["message"].startswith("Too many choices")

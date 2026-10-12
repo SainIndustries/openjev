@@ -100,6 +100,23 @@ def test_many_questions_in_chunks(client, dgemma):
     assert len(ask(client, qs, state="Answer about numbers.")["answers"]) == 30
 
 
+def test_decisions(client, dgemma):
+    r = client.post("/v1/decisions", json={"model": "openjev-latest", "input": STATE, "questions": [
+        {"type": "predicate", "name": "urgent", "instructions": QUESTIONS["urgent"]["instructions"]},
+        {"type": "choice", "name": "team", "instructions": QUESTIONS["team"]["instructions"],
+         "choices": [{"value": v, "description": d} for v, d in QUESTIONS["team"]["criteria"].items()]},
+        {"type": "score", "name": "tone", "instructions": QUESTIONS["tone"]["instructions"],
+         "levels": [{"label": label} for label in QUESTIONS["tone"]["criteria"]]}]})
+    assert r.status_code == 200, r.text
+    urgent, team, tone = r.json()["answers"]
+    assert urgent["probability"] > 0.5, urgent
+    assert team["choice"] == "outage", team
+    assert tone["score"] > 1.0 and [p["label"] for p in tone["probabilities"]] == ["calm", "annoyed", "furious"], tone
+    r = client.post("/v1/decisions", json={"model": "nope", "input": STATE,
+                                           "questions": [{"type": "predicate", "instructions": "x"}]})
+    assert r.status_code == 400 and r.json()["error"]["type"] == "invalid_request_error", r.text
+
+
 def test_unknown_model(client):
     r = client.post("/v1/systemone", json={"model": "nope", "state": STATE, "questions": QUESTIONS})
     assert r.status_code == 400, r.text

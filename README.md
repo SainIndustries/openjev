@@ -72,6 +72,7 @@ curl https://api.codiv.ai/v1/systemone \
 | | |
 |---|---|
 | `POST /v1/systemone` | `{state, model, questions}` → `{model, answers, usage}` |
+| `POST /v1/decisions` | OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions): `{model, input, questions: [...]}` → `{model, answers: [...], usage}` ([below](#openai-decisions-api)) |
 | `POST /v1/chat/completions` | OpenAI-style text generation with model `diffusiongemma-26b` ([below](#text-generation)) |
 | `GET /v1/models` | `openjev-0.1`, its alias `openjev-latest`, `diffusiongemma-26b`, and the [small encoder models](#small-encoder-models) when they run. The server also accepts `jev-latest` and `jev-preview`, so TypeSafe SDK defaults work; a server that runs one of the other models alone maps them to that model. |
 
@@ -134,6 +135,48 @@ curl https://api.codiv.ai/v1/systemone \
 ```
 
 `think` and `sequential` need a text state. A request that combines them with `images` gets a 400.
+
+### OpenAI Decisions API
+
+`POST /v1/decisions` takes OpenAI's
+[Decisions API](https://developers.openai.com/api/docs/guides/decisions) request, so the OpenAI
+SDKs work with it unchanged. Point them at the server and name an OpenJev model:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="https://api.codiv.ai/v1", api_key="sk-codiv-...")
+d = client.decisions.create(
+    model="openjev-latest",
+    input="I was charged twice this month.",
+    questions=[
+        {"type": "predicate", "name": "is_billing", "instructions": "Is this a billing issue?"},
+        {"type": "choice", "name": "team", "instructions": "Which team should handle it?",
+         "choices": [{"value": "billing", "description": "charges, refunds"},
+                     {"value": "outage", "description": "service down"}]},
+        {"type": "score", "name": "tone", "instructions": "How upset is the customer?",
+         "levels": [{"label": "calm"}, {"label": "annoyed"}, {"label": "furious"}]},
+    ],
+)
+d.answers[0].probability  # P(yes)
+```
+
+It is the same read as `/v1/systemone`, and the same questions get the same answers:
+
+| Decisions | `/v1/systemone` |
+|---|---|
+| `input`: a string, or `user` messages of `input_text` and `input_image` parts | `state` (texts joined by blank lines) and `images` |
+| `predicate` → `{probability}` | `noul` |
+| `choice` with `choices: [{value, description}]` → `{choice, probabilities: [{value, probability}], confidence}` | `choice` |
+| `score` with `levels: [{label, description}]` → `{score, probabilities: [{value, label, probability}], confidence}` | `score`; the model reads each level as `label: description` |
+
+Answers come back in question order, with their `name` when the question has one. Images must
+be inline `data:` URLs, with the same limits as `images`. Choice values may be strings or
+booleans. OpenJev never refuses a question, so no answer is a `refusal`.
+`usage.output_tokens_details.reasoning_tokens` counts a `think` thought, and cached tokens are
+always 0. The [extensions](#extensions) work here too. Errors use OpenAI's
+`{"error": {message, type, param, code}}`, all with status 400 for a request the server cannot
+answer. Auth errors keep Jev's shape. OpenJev serves no `gpt-6-luna`: name an OpenJev model.
 
 ### Text generation
 
