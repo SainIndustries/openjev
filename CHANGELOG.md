@@ -7,6 +7,13 @@
   `client.decisions.create` works against OpenJev. A decision is translated into a
   `/v1/systemone` request and read the same way, so the same questions get the same answers, on
   every backend and through `OPENJEV_MODEL_ROUTES`. Its errors use OpenAI's shape.
+- New models: Cloudflare's [Clef](https://huggingface.co/Cloudflare/clef) (`clef-1.0`, 27B) and
+  [Clef-flash](https://huggingface.co/Cloudflare/clef-flash) (`clef-flash-1.0`, 9B), as
+  simonlehmann's and alpha-x-ai's NVFP4/FP8 quantizations, with `OPENJEV_BACKEND=clef` or
+  `clef-flash` in the OpenJev image. Each reads all of a request's questions in one forward pass:
+  vLLM runs the backbone in the API server, and Cloudflare's head runs in its pooler. They take
+  images.
+- `confidence()` of a one-option distribution is 1.0 (#11). No request reached it.
 
 ## 0.6.0 (2026-10-06)
 

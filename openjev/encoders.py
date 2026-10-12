@@ -1,9 +1,10 @@
-"""Small System One models: Laya, Verdict, CLM and JevK5, one per container.
+"""Other System One models: Laya, Verdict, CLM, JevK5 and Clef, one per container.
 
-Selected with OPENJEV_BACKEND=laya, verdict, clm or jevk5. Laya and Verdict read the
+Selected with OPENJEV_BACKEND=laya, verdict, clm, jevk5, clef or clef-flash. Laya and Verdict read the
 questions of a request in batched forward passes of a bidirectional encoder and
 a classification head, one sequence per question; CLM scores each option against
-the state with contrastive heads; JevK5 reads its answer letters' logits. Either way an
+the state with contrastive heads; JevK5 reads its answer letters' logits; Clef scores
+all the options of all the questions in one forward pass. Either way an
 answer is a distribution over the caller's options exactly as with DiffusionGemma. The API layer, the error contract and
 the answer shapes are shared with the vLLM backend; only the read differs.
 
@@ -27,16 +28,25 @@ the answer shapes are shared with the vLLM backend; only the read differs.
   softmax over those letters' next-token logits under one calibration temperature
   (SemIf's readout). vLLM in the same container returns the letters' logprobs;
   the prompt and the reading of more than 16 options are the `jevk5` package's own.
+- clef-1.0, clef-flash-1.0: Clef and Clef-flash by Cloudflare (huggingface.co/Cloudflare/clef
+  and clef-flash, Apache-2.0): Qwen3.8-27B or Qwen3.5-9B and a joint schema head over the
+  final hidden states that scores every option of every question at once. Here mixed
+  NVFP4/FP8 quantizations (simonlehmann/clef-NVFP4, alpha-x-ai/clef-flash-NVFP4), on vLLM in
+  this process (openjev.clef_vllm). The prompt layout and the head are Cloudflare's
+  joint_schema_model.py, shipped with the weights. Clef takes images.
 
-None of these models has images, denoise steps, noise draws or a thought, so those
-request options are refused with a 400. torch, gliclass, laya, clm and
-jevk5 are imported lazily so the vLLM image never needs them.
+Apart from Clef's images, none of these models has images, denoise steps, noise draws or a thought, so those
+request options are refused with a 400. torch, gliclass, laya, clm,
+jevk5 and vllm are imported lazily so each image needs only its own.
 """
 import asyncio
+import base64
+import io
 import json
 import logging
 import math
 import os
+import pathlib
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -59,6 +69,7 @@ class EncoderEngine:
     model_name = ""
     max_choices = 255  # Jev's limit, as for DiffusionGemma
     workers = 1  # threads that read; one for a model that runs in this process
+    takes_images = False
 
     def __init__(self, settings):
         self.s = settings
@@ -129,10 +140,13 @@ class EncoderEngine:
                        "legend": list(crit) if kind == "score" else None})
         return qs, forced
 
+    async def read_async(self, state, qs, images=None):
+        return await asyncio.get_running_loop().run_in_executor(self.pool, self.read, state, qs)
+
     async def decide(self, questions, state, seed, images=None, options=None):
         """Engine.decide's contract. ``seed`` is unused: a read is deterministic."""
         opts = options or {}
-        unsupported = [("images", bool(images)), ("steps", (opts.get("steps") or 1) > 1),
+        unsupported = [("images", bool(images) and not self.takes_images), ("steps", (opts.get("steps") or 1) > 1),
                        ("samples", (opts.get("samples") or 1) > 1), ("think", bool(opts.get("think"))),
                        ("sequential", bool(opts.get("sequential")))]
         for field, used in unsupported:
@@ -144,8 +158,7 @@ class EncoderEngine:
         self.waiting += 1
         started = time.perf_counter_ns()
         try:
-            probs, tokens = (await asyncio.get_running_loop().run_in_executor(self.pool, self.read, state, qs)
-                             if qs else ([], 0))
+            probs, tokens = await self.read_async(state, qs, images) if qs else ([], 0)
         finally:
             self.waiting -= 1
             # the model= part of the Server-Timing header, as Engine records it
@@ -442,4 +455,111 @@ def jevk5_temperature(model):
         return float(json.load(f)["temperature"])
 
 
-ENGINES = {"laya": LayaEngine, "verdict": VerdictEngine, "clm": ClmEngine, "jevk5": JevK5Engine}
+# The default checkpoints, mixed NVFP4/FP8 quantizations checked against the bf16 release on text
+# and on photos, at the revisions this code was checked against. They keep the vision tower and
+# lm_head, which the head reads, in bf16.
+CLEF_CHECKPOINTS = {"simonlehmann/clef-NVFP4": "817ac58ad358f42489980ead62f8bf7cafc628c2",
+                    "alpha-x-ai/clef-flash-NVFP4": "e676d8e6e14f5ee74830d33fa1fad643d8f53acf"}
+
+
+class ClefEngine(EncoderEngine):
+    """Clef on vLLM in this process (openjev.clef_vllm): the head needs each request's question
+    and option spans, which vLLM's HTTP pooling API cannot carry. vLLM batches concurrent
+    requests itself, so a request is a coroutine, not a job on the reading thread."""
+
+    model_name = "clef-1.0"
+    checkpoint = "simonlehmann/clef-NVFP4"
+    takes_images = True
+
+    def __init__(self, settings):
+        self.s = settings
+        self.waiting = 0
+        self.engine = None
+
+    async def start(self):
+        """Load the weights and start vLLM; then warm up, before /health is up."""
+        from transformers import AutoProcessor
+        from vllm.engine.arg_utils import AsyncEngineArgs
+        from vllm.v1.engine.async_llm import AsyncLLM
+
+        from .clef_plugin import ARCHITECTURE
+        from .clef_vllm import release_module
+
+        model = self.s.clef_model or self.checkpoint
+        path = model
+        if not os.path.isdir(path):
+            from huggingface_hub import snapshot_download
+
+            path = await asyncio.to_thread(snapshot_download, model, revision=CLEF_CHECKPOINTS.get(model))
+        self.jsm = release_module(pathlib.Path(path))
+        self.processor = AutoProcessor.from_pretrained(path)
+        self.tok = self.processor.tokenizer
+        self.pad_ids = frozenset(self.tok.convert_tokens_to_ids(t) for t in ("<|image_pad|>", "<|video_pad|>"))
+        # Prefix caching off: the head needs every token's hidden state, which a cache hit skips.
+        self.engine = AsyncLLM.from_engine_args(AsyncEngineArgs(
+            model=path, hf_overrides={"architectures": [ARCHITECTURE]}, runner="pooling",
+            enable_prefix_caching=False, limit_mm_per_prompt={"image": self.s.max_images, "video": 0},
+            max_model_len=self.s.clef_max_tokens, max_num_seqs=self.s.clef_max_num_seqs,
+            gpu_memory_utilization=self.s.clef_gpu_util, disable_log_stats=True))
+        if self.s.warmup:
+            qs, _ = self.build_schema(WARMUP_QUESTIONS)
+            await self.read_async("warmup", qs)
+
+    async def close(self):
+        if self.engine is not None:
+            self.engine.shutdown()
+
+    async def read_async(self, state, qs, images=None):
+        """[probabilities per question, in the caller's option order], input tokens. All of a
+        request's questions are one prompt and one pass: the head reads them jointly. They keep
+        the caller's ids, which the prompt shows, and the instructions as given. Images come
+        before the state. A state too long is cut at its end (Cloudflare's encode_record)."""
+        from vllm import PoolingParams
+
+        from .clef_plugin import TASK, schema_layout, vllm_prompt
+
+        record = {"state": state,
+                  "questions": {q["key"]: {"type": q["type"], "instructions": q["raw_instructions"],
+                                           "criteria": q["criteria"]} for q in qs}}
+        if images:
+            record["images"] = [decode_image(part) for part in images]
+        try:
+            enc = await asyncio.to_thread(self.jsm.encode_record, self.tok, record, self.s.clef_max_tokens,
+                                          processor=self.processor)
+        except ValueError as e:  # the questions and images alone overflow the context
+            raise SchemaError(f"{self.model_name}: {e}") from None
+        params = PoolingParams(task=TASK, extra_kwargs={"clef_questions": schema_layout(enc),
+                                                        "clef_length": len(enc.input_ids)})
+        final = None
+        async for out in self.engine.encode(vllm_prompt(enc.input_ids, self.pad_ids, record.get("images")),
+                                            params, f"clef-{os.urandom(8).hex()}"):
+            final = out
+        flat = final.outputs.data.float().cpu()
+        if flat.numel() != sum(len(eq.option_ids) for eq in enc.questions):
+            raise RuntimeError(f"{self.model_name}: vLLM's image tokens did not line up with Clef's")
+        probs, at = [], 0
+        for q, eq in zip(qs, enc.questions):
+            n = len(eq.option_ids)
+            p = dict(zip(eq.option_ids, flat[at:at + n].softmax(-1).tolist()))
+            at += n
+            # Clef orders a choice's options by name; ours keep the caller's order, P(true) first for noul
+            names = ("true", "false") if q["type"] == "noul" else [str(name) for name, _ in q["choices"]]
+            probs.append([p[name] for name in names])
+        return probs, len(enc.input_ids)
+
+
+class ClefFlashEngine(ClefEngine):
+    model_name = "clef-flash-1.0"
+    checkpoint = "alpha-x-ai/clef-flash-NVFP4"
+
+
+def decode_image(part):
+    """A PIL image from an OpenAI-style image part (api.image_parts has checked its type and size)."""
+    from PIL import Image
+
+    data = part["image_url"]["url"].partition(",")[2]
+    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")  # a GIF reads as its first frame
+
+
+ENGINES = {"laya": LayaEngine, "verdict": VerdictEngine, "clm": ClmEngine, "jevk5": JevK5Engine,
+           "clef": ClefEngine, "clef-flash": ClefFlashEngine}

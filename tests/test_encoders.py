@@ -1,8 +1,12 @@
-"""Offline tests for the small backends (Laya, Verdict, CLM, JevK5): stubbed models, the real API."""
+"""Offline tests for the other backends (Laya, Verdict, CLM, JevK5, Clef): stubbed models, the real API."""
+import base64
+import io
 import json
 import math
+import sys
 import time
 import zlib
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -11,7 +15,7 @@ from fastapi.testclient import TestClient
 from openjev import encoders
 from openjev.api import create_app
 from openjev.config import Settings, parse_routes, served_models
-from openjev.encoders import ClmEngine, EncoderEngine, JevK5Engine, VerdictEngine, verdict_prompt
+from openjev.encoders import ClefEngine, ClmEngine, EncoderEngine, JevK5Engine, VerdictEngine, verdict_prompt
 
 REQUEST = {
     "state": "I was charged twice this month.",
@@ -394,3 +398,139 @@ def test_jevk5_model_rejection_is_a_400(jevk5_client):
 def test_jevk5_unreachable_vllm_is_a_503(jevk5_client):
     jevk5_client.stub.status = None
     assert jevk5_client.post("/v1/systemone", json=dict(REQUEST, model="jevk5-0.2")).status_code == 503
+
+
+# Clef: Cloudflare's joint_schema_model and vLLM stubbed with their contracts as ClefEngine uses them.
+class StubClefModule:
+    """encode_record lists a choice's options sorted by name, as question_options does."""
+
+    def __init__(self):
+        self.records = []
+
+    def encode_record(self, tokenizer, record, max_length, processor=None):
+        if len(json.dumps(record["questions"])) > max_length:
+            raise ValueError(f"schema requires 9999 tokens before state; maximum is {max_length}")
+        self.records.append(record)
+        questions = []
+        for qid, q in record["questions"].items():
+            if q["type"] == "noul":
+                ids = ("true", "false")
+            elif q["type"] == "choice":
+                ids = tuple(sorted(str(k) for k in q["criteria"]))
+            else:
+                ids = tuple(str(i) for i in range(len(q["criteria"])))
+            questions.append(SimpleNamespace(question_id=qid, question_type=0, question_span=(0, 1),
+                                             option_spans=tuple((i, i + 1) for i in range(len(ids))), option_ids=ids))
+        return SimpleNamespace(input_ids=(0,) * 42, questions=tuple(questions))
+
+
+class StubAsyncLLM:
+    """The pooler's output: every option logit of every question, in order. Each option gets the
+    log of a fixed probability, by option id, so the order the logits come in is checked."""
+    P = {"billing": 0.6, "outage": 0.3, "feature": 0.1, "true": 0.8, "false": 0.2, "0": 0.1, "1": 0.2, "2": 0.7}
+
+    def __init__(self, stub):
+        self.stub, self.params = stub, []
+
+    async def encode(self, prompt, params, request_id):
+        import torch
+
+        self.params.append(params)
+        ids = [i for q in self.stub.records[-1]["questions"].values() for i in StubClefModule.option_ids(q)]
+        yield SimpleNamespace(outputs=SimpleNamespace(data=torch.log(torch.tensor([self.P[i] for i in ids]))))
+
+    def shutdown(self):
+        pass
+
+
+def _option_ids(q):
+    if q["type"] == "noul":
+        return ["true", "false"]
+    if q["type"] == "choice":
+        return sorted(str(k) for k in q["criteria"])
+    return [str(i) for i in range(len(q["criteria"]))]
+
+
+StubClefModule.option_ids = staticmethod(_option_ids)
+
+
+@pytest.fixture
+def clef_client(monkeypatch):
+    pytest.importorskip("torch")
+    # vLLM's PoolingParams, as far as ClefEngine uses it (vLLM itself is only in the image)
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(PoolingParams=SimpleNamespace))
+    stub = StubClefModule()
+
+    class StubClef(ClefEngine):
+        async def start(self):
+            self.jsm, self.tok, self.processor, self.engine = stub, None, None, StubAsyncLLM(stub)
+            self.pad_ids = frozenset()
+
+    monkeypatch.setitem(encoders.ENGINES, "clef", StubClef)
+    with TestClient(create_app(Settings(backend="clef", warmup=False, clef_max_tokens=2000))) as c:
+        c.stub = stub
+        yield c
+
+
+def test_clef_answers_in_the_callers_option_order(clef_client):
+    r = clef_client.post("/v1/systemone", json=dict(REQUEST, model="clef-1.0"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == "clef-1.0"
+    assert body["usage"] == {"input_tokens": 42, "output_tokens": 0}
+    a = body["answers"]
+    assert list(a["team"]["probabilities"]) == ["outage", "billing", "feature"]
+    assert a["team"]["probabilities"] == {"outage": pytest.approx(0.3), "billing": pytest.approx(0.6),
+                                          "feature": pytest.approx(0.1)}
+    assert a["team"]["choice"] == "billing"
+    assert a["tone"]["score"] == pytest.approx(0.2 + 2 * 0.7)
+    assert a["urgent"]["noul"] == pytest.approx(0.8)  # P(true)
+    # one read for all three questions, under the caller's ids and with the instructions as sent
+    (record,) = clef_client.stub.records
+    assert list(record["questions"]) == ["team", "tone", "urgent"]
+    assert record["questions"]["team"]["instructions"] == "Which team should handle it?"
+    (params,) = clef_client.app.state.engine.engine.params
+    assert params.task == "token_classify"
+    assert params.extra_kwargs["clef_questions"][0] == [0, [0, 1], [[0, 1], [1, 2], [2, 3]]]
+    assert params.extra_kwargs["clef_length"] == 42
+
+
+def test_clef_takes_images(clef_client):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (4, 3)).save(buf, "PNG")
+    image = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    r = clef_client.post("/v1/systemone", json=dict(REQUEST, model="clef-1.0", images=[image]))
+    assert r.status_code == 200, r.text
+    (sent,) = clef_client.stub.records[0]["images"]
+    assert sent.size == (4, 3) and sent.mode == "RGB"
+
+
+def test_clef_vllm_prompt_collapses_image_runs():
+    from openjev.clef_plugin import vllm_prompt
+
+    p = vllm_prompt((1, 2, 9, 9, 9, 3, 9, 9, 4), {9}, ["im1", "im2"])
+    assert p == {"prompt_token_ids": [1, 2, 9, 3, 9, 4], "multi_modal_data": {"image": ["im1", "im2"]}}
+    assert vllm_prompt((1, 2), {9}, None) == {"prompt_token_ids": [1, 2]}
+
+
+def test_clef_schema_over_the_context_is_a_400(clef_client):
+    q = {"c": {"type": "choice", "instructions": "Which?", "criteria": {f"o{i}": "x" * 50 for i in range(60)}}}
+    r = clef_client.post("/v1/systemone", json=dict(REQUEST, model="clef-1.0", questions=q))
+    assert r.status_code == 400
+    assert "maximum is 2000" in json.dumps(r.json())
+
+
+def test_clef_models_are_listed():
+    assert served_models("clef")[0] == "clef-1.0"
+    assert served_models("clef-flash")[0] == "clef-flash-1.0"
+    assert encoders.ENGINES["clef"].checkpoint == "simonlehmann/clef-NVFP4"
+    assert encoders.ENGINES["clef-flash"].checkpoint == "alpha-x-ai/clef-flash-NVFP4"
+
+
+def test_clef_schema_layout():
+    from openjev.clef_plugin import schema_layout
+
+    q = SimpleNamespace(question_type=1, question_span=(5, 9), option_spans=((10, 12), (13, 15)))
+    assert schema_layout(SimpleNamespace(questions=(q,))) == [[1, [5, 9], [[10, 12], [13, 15]]]]

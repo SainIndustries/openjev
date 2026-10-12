@@ -87,6 +87,24 @@ services:
     deploy: *gpu
     restart: unless-stopped
 
+  # Clef-flash runs on vLLM in the openjev image (NVFP4, about 8 GiB of weights): start it with
+  # --profile clef and add clef-flash-1.0=http://clef:8080 to OPENJEV_MODEL_ROUTES, leaving it room
+  # as for CLM. OPENJEV_CLEF_BACKEND=clef serves Clef (about 20 GiB) instead, as clef-1.0.
+  clef:
+    image: razorback16/openjev:0.6.0
+    profiles: [clef]
+    environment:
+      <<: *encoder-env
+      OPENJEV_BACKEND: ${OPENJEV_CLEF_BACKEND:-clef-flash}
+      OPENJEV_GPU_UTIL: ${OPENJEV_CLEF_GPU_UTIL:-0.15}
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-cache:/root/.cache/vllm
+      - flashinfer-cache:/root/.cache/flashinfer
+    ipc: host
+    deploy: *gpu
+    restart: unless-stopped
+
 volumes:
   vllm-cache:
   flashinfer-cache:

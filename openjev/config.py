@@ -73,7 +73,7 @@ class Settings:
     gen_max_inflight: int = field(default_factory=lambda: int(_env("OPENJEV_GEN_MAX_INFLIGHT", "8")))
     gen_max_queue: int = field(default_factory=lambda: int(_env("OPENJEV_GEN_MAX_QUEUE", "32")))
     gen_max_tokens: int = field(default_factory=lambda: int(_env("OPENJEV_GEN_MAX_TOKENS", "8192")))
-    # The encoder backends (OPENJEV_BACKEND=laya, verdict, clm or jevk5). OPENJEV_DEVICE empty picks CUDA when present.
+    # The encoder backends (OPENJEV_BACKEND=laya, verdict, clm, jevk5, clef or clef-flash). OPENJEV_DEVICE empty picks CUDA when present.
     laya_model: str = field(default_factory=lambda: _env("OPENJEV_LAYA_MODEL", "convaiinnovations/laya-typed-decisions"))
     verdict_model: str = field(default_factory=lambda: _env("OPENJEV_VERDICT_MODEL", "heman10x/rlcd-modernbert-151m"))
     device: str = field(default_factory=lambda: _env("OPENJEV_DEVICE", ""))
@@ -89,6 +89,14 @@ class Settings:
     # jevk5_config.json holds the calibration temperature.
     jevk5_model: str = field(default_factory=lambda: _env("OPENJEV_MODEL", "alibiserikbay/JevK5"))
     jevk5_workers: int = field(default_factory=lambda: int(_env("OPENJEV_JEVK5_WORKERS", "32")))
+    # Clef (OPENJEV_BACKEND=clef or clef-flash) runs vLLM in this process. OPENJEV_CLEF_MODEL is a
+    # Hugging Face repo or a local directory; empty is the backend's own checkpoint, at the
+    # revision pinned in encoders.CLEF_CHECKPOINTS. GPU_UTIL and MAX_NUM_SEQS mean what they mean
+    # to the entrypoint's vLLM.
+    clef_model: str = field(default_factory=lambda: _env("OPENJEV_CLEF_MODEL", ""))
+    clef_max_tokens: int = field(default_factory=lambda: int(_env("OPENJEV_CLEF_MAX_TOKENS", "16384")))
+    clef_gpu_util: float = field(default_factory=lambda: float(_env("OPENJEV_GPU_UTIL", "0.85")))
+    clef_max_num_seqs: int = field(default_factory=lambda: int(_env("OPENJEV_MAX_NUM_SEQS", "64")))
     warmup: bool = field(default_factory=lambda: _env("OPENJEV_WARMUP", "1") != "0")
     # Other System One models served by other OpenJev containers: "name=url,name=url".
     # A request for one of them is passed through unchanged, so one origin serves all.
@@ -100,7 +108,7 @@ class Settings:
         0 never opens, so every request would wait out its timeout instead of a 529."""
         positive = ("canvas", "canvas_step", "max_inflight", "max_questions", "max_body_bytes",
                     "max_image_bytes", "gen_max_inflight", "gen_max_tokens", "mlx_max_prompt",
-                    "encoder_batch", "clm_workers", "jevk5_workers", "forward_timeout")
+                    "encoder_batch", "clm_workers", "jevk5_workers", "clef_max_tokens", "clef_max_num_seqs", "forward_timeout")
         for name in positive:
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be at least 1, got {getattr(self, name)!r} "
@@ -159,6 +167,17 @@ ENCODER_MODELS = {
                              "LoRA distilled from Qwen3.6-27B, merged, read as a softmax over the answer letters' "
                              "logits (SemIf's readout), on vLLM. Text only, 16,384 tokens.",
               "release_date": "2026-09-25"},
+    "clef": {"name": "clef-1.0",
+             "description": "Clef by Cloudflare (huggingface.co/Cloudflare/clef, Apache-2.0): Qwen3.8-27B with a "
+                            "joint schema head that scores every option of every question in one forward pass. "
+                            "Here simonlehmann's NVFP4/FP8 quantization (simonlehmann/clef-NVFP4) on vLLM. Text and "
+                            "images, 16,384 tokens.",
+             "release_date": "2026-10-06"},
+    "clef-flash": {"name": "clef-flash-1.0",
+                   "description": "Clef-flash by Cloudflare (huggingface.co/Cloudflare/clef-flash, Apache-2.0): Clef "
+                                  "on Qwen3.5-9B. Here alpha-x-ai's NVFP4/FP8 quantization "
+                                  "(alpha-x-ai/clef-flash-NVFP4) on vLLM. Text and images, 16,384 tokens.",
+                   "release_date": "2026-10-06"},
 }
 
 

@@ -15,6 +15,10 @@ mlx = ["mlx-vlm==0.6.15; sys_platform == 'darwin' and platform_machine == 'arm64
 laya = ["laya==0.3.6"]
 verdict = ["gliclass==0.1.20"]
 
+# Clef's model for vLLM (OPENJEV_BACKEND=clef or clef-flash); see openjev/clef_plugin.py
+[project.entry-points."vllm.general_plugins"]
+clef = "openjev.clef_plugin:register"
+
 [project.urls]
 Homepage = "https://codiv.ai"
 Source = "https://github.com/razorback16/openjev"

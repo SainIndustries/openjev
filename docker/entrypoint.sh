@@ -9,6 +9,10 @@ set -euo pipefail
 if [[ -n "${OPENJEV_UPSTREAM:-}" ]]; then
   exec python -m openjev
 fi
+# Clef runs vLLM inside the API server (openjev.clef_vllm), not as a second process
+if [[ "${OPENJEV_BACKEND:-vllm}" == clef || "${OPENJEV_BACKEND:-vllm}" == clef-flash ]]; then
+  exec python -m openjev
+fi
 
 if [[ "${OPENJEV_BACKEND:-vllm}" == clm ]]; then
   # CLM's heads were trained on Qwen3-8B's last-token embeddings, as vLLM's pooling runner

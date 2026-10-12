@@ -26,10 +26,13 @@ OpenJev is an independent project. It is not affiliated with or endorsed by Type
 | `verdict-1.4` | [Verdict](https://github.com/Heman10x-NGU/Verdict-open-jev) by Heman10x | 151M | text, 512 tokens | up to 24 | PyTorch, GPU or CPU |
 | `clm-v0.1` | [CLM](https://github.com/Contrastive-LM/CLM) by Contrastive-LM: contrastive heads over Qwen3-8B | 8B + 2 × 9.4M | text, 2,048 tokens | up to 255 | vLLM (NVIDIA GPU) |
 | `jevk5-0.2` | [JevK5](https://github.com/allebee/jevk5) by Alibi Serikbay: Qwen3.5-4B with a distilled LoRA, read by its answer letters | 4B | text, 16,384 tokens | up to 255 | vLLM (NVIDIA GPU) |
+| `clef-1.0` | [Clef](https://huggingface.co/Cloudflare/clef) by Cloudflare: Qwen3.8-27B with a joint schema head, NVFP4 | 27B | text and images, 16,384 tokens | up to 255 | vLLM (NVIDIA Blackwell) |
+| `clef-flash-1.0` | [Clef-flash](https://huggingface.co/Cloudflare/clef-flash) by Cloudflare: Clef on Qwen3.5-9B, NVFP4 | 9B | text and images, 16,384 tokens | up to 255 | vLLM (NVIDIA Blackwell) |
 
 `diffusiongemma-26b` is the same DiffusionGemma for [text generation](#text-generation). All
-weights are Apache-2.0. Laya, Verdict, CLM and JevK5 are other people's models: see
-[Small encoder models](#small-encoder-models), [CLM](#clm) and [JevK5](#jevk5) for details and credit.
+weights are Apache-2.0. Laya, Verdict, CLM, JevK5 and Clef are other people's models: see
+[Small encoder models](#small-encoder-models), [CLM](#clm), [JevK5](#jevk5) and [Clef](#clef) for
+details and credit.
 
 ## Try it
 
@@ -538,10 +541,52 @@ about a state shorter than that do not share its prefill; longer states do.
 The image sets `VLLM_USE_FLASHINFER_SAMPLER=0`. A read takes one greedy token and keeps only
 logprobs, and FlashInfer's sampler would need a CUDA compiler the image does not have.
 
+### Clef
+
+[Clef and Clef-flash](https://blog.cloudflare.com/clef-decision-models) are Cloudflare's models;
+the credit is theirs. [Clef](https://huggingface.co/Cloudflare/clef) is Qwen3.8-27B and
+[Clef-flash](https://huggingface.co/Cloudflare/clef-flash) is Qwen3.5-9B, each with its vision
+encoder and a small transformer head over the final hidden states. The head scores every option of every question
+in one forward pass, so the questions of a request are read together and the state is read
+once. The prompt layout and the head are Cloudflare's own `joint_schema_model.py`, which ships
+with the weights.
+
+OpenJev serves two community quantizations, NVFP4 with FP8 where it matters most. They need a
+Blackwell GPU, and keep the vision encoder and `lm_head` (which the head reads) in bf16:
+
+| Model | Checkpoint | Size | Against the bf16 release |
+|---|---|---|---|
+| `clef-1.0` | [simonlehmann/clef-NVFP4](https://huggingface.co/simonlehmann/clef-NVFP4) | 23 GB | the same top answer on 98.5% of BANKING77 and 96.9% of questions about photos |
+| `clef-flash-1.0` | [alpha-x-ai/clef-flash-NVFP4](https://huggingface.co/alpha-x-ai/clef-flash-NVFP4) | 10.3 GB | the same top answer on 98.9% of 1,358 questions, 99.3% of those about photos |
+
+Those are their authors' numbers. Measure on your own data.
+
+The backbone runs on vLLM inside the API server, with the head in vLLM's pooler
+(`openjev/clef_vllm.py`, from [kurcontko's plugin](https://huggingface.co/kurcontko/clef-NVFP4)).
+The head needs each request's question and option spans, which vLLM's HTTP pooling API cannot
+carry. vLLM batches concurrent requests. Images go before the state, as Clef was trained. Clef
+needs no image of its own: the OpenJev image serves it with `OPENJEV_BACKEND=clef` or `clef-flash`.
+
+```bash
+docker run -d --gpus all --ipc host -p 127.0.0.1:8085:8080 -e OPENJEV_BACKEND=clef-flash \
+  -v ~/.cache/huggingface:/root/.cache/huggingface razorback16/openjev
+```
+
+Next to DiffusionGemma, run `docker compose --profile clef up -d` and add
+`clef-flash-1.0=http://clef:8080` to `OPENJEV_MODEL_ROUTES`. `OPENJEV_CLEF_GPU_UTIL` (default 0.15)
+is its share of the GPU; `OPENJEV_CLEF_BACKEND=clef` serves the 27B instead.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPENJEV_CLEF_MODEL` | `simonlehmann/clef-NVFP4` or `alpha-x-ai/clef-flash-NVFP4` | the weights: a Hugging Face repo or a local directory with Clef's head and `joint_schema_model.py` |
+| `OPENJEV_CLEF_MAX_TOKENS` | `16384` | longest read, images and questions included |
+| `OPENJEV_GPU_UTIL` | `0.85` | vLLM's `gpu_memory_utilization` |
+| `OPENJEV_MAX_NUM_SEQS` | `64` | requests vLLM reads at once |
+
 ### How the other models differ
 
 Laya, Verdict, CLM and JevK5 take text only: `images`, `steps` above 1, `samples` above 1,
-`think` and `sequential` get a 400.
+`think` and `sequential` get a 400. Clef takes images; the rest get a 400.
 
 | Model | Longest read | A longer state | `usage.input_tokens` counts |
 |---|---|---|---|
@@ -549,16 +594,17 @@ Laya, Verdict, CLM and JevK5 take text only: `images`, `steps` above 1, `samples
 | `verdict-1.4` | 512 tokens, options included | is cut, with no error | what the model read. Each question reads the state again |
 | `clm-v0.1` | 2,048 tokens | loses its start, so the question (which comes last) survives. Upstream CLM cuts the end ([CLM PR #6](https://github.com/Contrastive-LM/CLM/pull/6)) | only the texts it had to embed, so a repeated request reports 0 |
 | `jevk5-0.2` | 16,384 tokens | gets a 400, never a cut | every pass, as JevK5 does. Each question reads the state again |
+| `clef-1.0`, `clef-flash-1.0` | 16,384 tokens, images and questions included | loses its end, as Cloudflare's code cuts it, with no error. Questions or images that fill the window alone get a 400 | the one read, images included |
 
 ### Settings
 
 The server reads its settings from the environment. The settings for one backend only are in
 that backend's section: [Apple silicon](#apple-silicon), [Small encoder models](#small-encoder-models),
-[CLM](#clm) and [JevK5](#jevk5).
+[CLM](#clm), [JevK5](#jevk5) and [Clef](#clef).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OPENJEV_BACKEND` | `vllm` | `mlx` to run the model in-process on Apple silicon. `laya` or `verdict` for a [small encoder model](#small-encoder-models), `clm` for [CLM](#clm), `jevk5` for [JevK5](#jevk5) |
+| `OPENJEV_BACKEND` | `vllm` | `mlx` to run the model in-process on Apple silicon. `laya` or `verdict` for a [small encoder model](#small-encoder-models), `clm` for [CLM](#clm), `jevk5` for [JevK5](#jevk5), `clef` or `clef-flash` for [Clef](#clef) |
 | `OPENJEV_MODEL_ROUTES` | unset | `name=url,...`: other OpenJev servers. A request for one of these model names goes to that server unchanged. |
 | `OPENJEV_FORWARD_TIMEOUT` | `300` | seconds before a request forwarded to another OpenJev server is a 503 |
 | `OPENJEV_UPSTREAM` | unset | external vLLM server URL. When set, the container does not start its own |

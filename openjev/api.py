@@ -173,6 +173,8 @@ def create_app(settings=None, tokenizer=None):
         if encoder:
             from .encoders import ENGINES
             app.state.engine = ENGINES[settings.backend](settings)
+            if hasattr(app.state.engine, "start"):  # Clef starts vLLM in this process
+                await app.state.engine.start()
             yield
             await app.state.engine.close()
             await app.state.routes.aclose()
