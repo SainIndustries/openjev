@@ -559,7 +559,16 @@ Blackwell GPU, and keep the vision encoder and `lm_head` (which the head reads) 
 | `clef-1.0` | [simonlehmann/clef-NVFP4](https://huggingface.co/simonlehmann/clef-NVFP4) | 23 GB | the same top answer on 98.5% of BANKING77 and 96.9% of questions about photos |
 | `clef-flash-1.0` | [alpha-x-ai/clef-flash-NVFP4](https://huggingface.co/alpha-x-ai/clef-flash-NVFP4) | 10.3 GB | the same top answer on 98.9% of 1,358 questions, 99.3% of those about photos |
 
-Those are their authors' numbers. Measure on your own data.
+Those are their authors' numbers. Measure on your own data. On 8 text and image cases (17
+questions) OpenJev gave the same top answer as each checkpoint's own `clef_vllm.py` on all 17,
+with the same token counts, and probabilities within 0.03.
+
+Measured on one RTX PRO 6000 (Blackwell):
+
+| Model | Weights | 3 questions, 319 tokens, 1 at a time | the same with a receipt image | 32 at a time |
+|---|---:|---:|---:|---:|
+| `clef-flash-1.0` | 9.7 GiB | 27 ms | 35 ms | 116 req/s |
+| `clef-1.0` | 22.7 GiB | 46 ms | 92 ms | 42 req/s |
 
 The backbone runs on vLLM inside the API server, with the head in vLLM's pooler
 (`openjev/clef_vllm.py`, from [kurcontko's plugin](https://huggingface.co/kurcontko/clef-NVFP4)).
