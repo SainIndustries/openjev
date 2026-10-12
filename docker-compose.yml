@@ -6,7 +6,7 @@
 services:
   openjev:
     build: {context: ., dockerfile: docker/Dockerfile}
-    image: razorback16/openjev:0.6.0
+    image: razorback16/openjev:0.7.0
     environment:
       OPENJEV_CANVAS: "64"
       OPENJEV_MAX_NUM_SEQS: ${OPENJEV_MAX_NUM_SEQS:-64}
@@ -34,7 +34,7 @@ services:
   # Lower OPENJEV_GPU_UTIL to leave vLLM's neighbours that much room.
   laya:
     build: {context: ., dockerfile: docker/Dockerfile.laya}
-    image: razorback16/openjev-laya:0.5.0
+    image: razorback16/openjev-laya:0.7.0
     environment: &encoder-env
       # the openjev container forwards the caller's key and origin secret, so these match it
       OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}
@@ -48,7 +48,7 @@ services:
 
   verdict:
     build: {context: ., dockerfile: docker/Dockerfile.verdict}
-    image: razorback16/openjev-verdict:0.5.0
+    image: razorback16/openjev-verdict:0.7.0
     environment: *encoder-env
     volumes: *hf
     deploy: *gpu
@@ -59,7 +59,7 @@ services:
   # and add it to OPENJEV_MODEL_ROUTES.
   clm:
     build: {context: ., dockerfile: docker/Dockerfile.clm}
-    image: razorback16/openjev-clm:0.5.0
+    image: razorback16/openjev-clm:0.7.0
     profiles: [clm]
     environment:
       <<: *encoder-env
@@ -75,7 +75,7 @@ services:
   # jevk5-0.2=http://jevk5:8080 to OPENJEV_MODEL_ROUTES, leaving it room as for CLM.
   jevk5:
     build: {context: ., dockerfile: docker/Dockerfile.jevk5}
-    image: razorback16/openjev-jevk5:0.5.0
+    image: razorback16/openjev-jevk5:0.7.0
     profiles: [jevk5]
     environment:
       <<: *encoder-env
@@ -91,7 +91,7 @@ services:
   # --profile clef and add clef-flash-1.0=http://clef:8080 to OPENJEV_MODEL_ROUTES, leaving it room
   # as for CLM. OPENJEV_CLEF_BACKEND=clef serves Clef (about 20 GiB) instead, as clef-1.0.
   clef:
-    image: razorback16/openjev:0.6.0
+    image: razorback16/openjev:0.7.0
     profiles: [clef]
     environment:
       <<: *encoder-env

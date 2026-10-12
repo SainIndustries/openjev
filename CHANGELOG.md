@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-12)
+
+All five images (`openjev`, `openjev-laya`, `openjev-verdict`, `openjev-clm`, `openjev-jevk5`) are
+released at 0.7.0, so every backend answers `/v1/decisions`.
+
 
 - `POST /v1/decisions` serves OpenAI's
   [Decisions API](https://developers.openai.com/api/docs/guides/decisions), so the OpenAI SDKs'

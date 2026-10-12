@@ -8,7 +8,8 @@ off-schema. Questions can also ask about images.
 
 OpenJev uses the same wire API as TypeSafe's
 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), so their SDKs work with it
-unchanged. It runs
+unchanged. It also answers OpenAI's [Decisions API](#openai-decisions-api), so the OpenAI SDKs'
+`client.decisions.create` works too. It runs
 [DiffusionGemma 26B-A4B](https://huggingface.co/nvidia/diffusiongemma-26B-A4B-it-NVFP4)
 (Apache-2.0) through vLLM on an NVIDIA GPU, or through MLX on Apple silicon.
 
@@ -259,7 +260,7 @@ Or without compose:
 
 ```bash
 docker run -d --gpus all --ipc=host -p 127.0.0.1:8080:8080 \
-  -v ~/.cache/huggingface:/root/.cache/huggingface razorback16/openjev:0.6.0
+  -v ~/.cache/huggingface:/root/.cache/huggingface razorback16/openjev:0.7.0
 ```
 
 The first start downloads the weights (about 18 GB) into `~/.cache/huggingface`. To build the
