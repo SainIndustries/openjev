@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2 (2026-10-12)
+
+Only the new `openjev-clef` image is released at 0.7.2.
+
+- Clef and Clef-flash get their own image, `openjev-clef` (`docker/Dockerfile.clef`), instead of
+  running from the OpenJev image. It has the same vLLM commit without the DiffusionGemma patches,
+  so Clef can move to a newer vLLM independently. It serves Clef-flash by default.
+
 ## 0.7.1 (2026-10-12)
 
 Only `openjev-jevk5` is released at 0.7.1; the other images stay at 0.7.0.

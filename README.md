@@ -576,12 +576,16 @@ Measured on one RTX PRO 6000 (Blackwell):
 The backbone runs on vLLM inside the API server, with the head in vLLM's pooler
 (`openjev/clef_vllm.py`, from [kurcontko's plugin](https://huggingface.co/kurcontko/clef-NVFP4)).
 The head needs each request's question and option spans, which vLLM's HTTP pooling API cannot
-carry. vLLM batches concurrent requests. Images go before the state, as Clef was trained. Clef
-needs no image of its own: the OpenJev image serves it with `OPENJEV_BACKEND=clef` or `clef-flash`.
+carry. vLLM batches concurrent requests. Images go before the state, as Clef was trained.
+
+The `clef` image (`docker/Dockerfile.clef`) has the same vLLM commit as the OpenJev image, without
+its DiffusionGemma patches, so Clef can move to a newer vLLM on its own. It serves Clef-flash by
+default; `OPENJEV_BACKEND=clef` serves the 27B.
 
 ```bash
-docker run -d --gpus all --ipc host -p 127.0.0.1:8085:8080 -e OPENJEV_BACKEND=clef-flash \
-  -v ~/.cache/huggingface:/root/.cache/huggingface razorback16/openjev
+docker build -f docker/Dockerfile.clef -t openjev-clef .   # after the base, as above
+docker run -d --gpus all --ipc host -p 127.0.0.1:8085:8080 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface openjev-clef
 ```
 
 Next to DiffusionGemma, run `docker compose --profile clef up -d` and add

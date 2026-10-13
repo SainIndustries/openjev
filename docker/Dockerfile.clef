@@ -1,0 +1,40 @@
+# Clef and Clef-flash (clef-1.0, clef-flash-1.0): vLLM runs inside the API server as a pooling
+# model, with Cloudflare's joint schema head in the pooler (openjev.clef_vllm). Build
+# docker/Dockerfile.base first.
+#   docker build -f docker/Dockerfile.clef -t razorback16/openjev-clef .
+# OPENJEV_BACKEND picks the model: clef-flash (the default here) or clef.
+#
+# vLLM is the same commit as docker/Dockerfile's, without its DiffusionGemma patches. The
+# checkpoints are NVFP4, so this image needs a Blackwell GPU.
+ARG BASE_IMAGE=razorback16/openjev-base:cu130-torch2.13
+FROM ${BASE_IMAGE}
+
+ARG VLLM_REPO=https://github.com/vllm-project/vllm
+ARG VLLM_COMMIT=a3e0243b1c3ea313b902a43b0f6559fb4148ff81
+
+# FlashInfer compiles its NVFP4 GEMM (fp4_gemm_cutlass_sm120) with nvcc on first start, as
+# docker/Dockerfile does for DiffusionGemma's.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cuda-nvcc-13-0 cuda-cudart-dev-13-0 cuda-cccl-13-0 cuda-nvrtc-dev-13-0 \
+        cuda-cuobjdump-13-0 libcurand-dev-13-0 libcublas-dev-13-0 libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV CUDA_HOME=/usr/local/cuda PATH=/usr/local/cuda/bin:$PATH
+
+RUN git clone --filter=blob:none "$VLLM_REPO" /opt/vllm && git -C /opt/vllm checkout "$VLLM_COMMIT" \
+    && cd /opt/vllm && VLLM_USE_PRECOMPILED=1 VLLM_PRECOMPILED_WHEEL_COMMIT="$VLLM_COMMIT" \
+       uv pip install --python /opt/venv/bin/python . \
+    && rm -rf /root/.cache/uv
+
+# The API server goes last so a code change only rebuilds a few small layers. Installing it
+# registers Clef's model with vLLM (the vllm.general_plugins entry point).
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY openjev ./openjev
+RUN uv pip install --python /opt/venv/bin/python --no-cache .
+COPY docker/entrypoint.sh /usr/local/bin/openjev-entrypoint
+
+ENV OPENJEV_BACKEND=clef-flash OPENJEV_HOST=0.0.0.0 OPENJEV_PORT=8080
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=3s --start-period=900s \
+    CMD curl -sf http://127.0.0.1:8080/health || exit 1
+ENTRYPOINT ["openjev-entrypoint"]

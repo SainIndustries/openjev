@@ -87,11 +87,12 @@ services:
     deploy: *gpu
     restart: unless-stopped
 
-  # Clef-flash runs on vLLM in the openjev image (NVFP4, about 8 GiB of weights): start it with
+  # Clef-flash runs on vLLM in its own image (NVFP4, about 8 GiB of weights): start it with
   # --profile clef and add clef-flash-1.0=http://clef:8080 to OPENJEV_MODEL_ROUTES, leaving it room
   # as for CLM. OPENJEV_CLEF_BACKEND=clef serves Clef (about 20 GiB) instead, as clef-1.0.
   clef:
-    image: razorback16/openjev:0.7.0
+    build: {context: ., dockerfile: docker/Dockerfile.clef}
+    image: razorback16/openjev-clef:0.7.2
     profiles: [clef]
     environment:
       <<: *encoder-env
