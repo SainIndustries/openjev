@@ -1,109 +1,45 @@
-# OpenJev: vLLM (DiffusionGemma structured reads) and the Jev-compatible API on :8080,
-# in one container. Two small encoder models run beside it on the same GPU, each
-# in its own container; the openjev container passes their requests through, so
-# :8080 serves all three models. CLM and JevK5 are opt-in: see the clm and jevk5 services.
-# Build docker/Dockerfile.base first: all the images start FROM it and share its layers.
+# SAIN fork config (branch sain/gemma-only, upstream pinned at b4339c640f5331ef75098637d1be2c787715ee88).
+# Serves ONLY DiffusionGemma 26B-A4B (Google, Apache-2.0) as openjev-0.1 / diffusiongemma-26b.
+# Removed: laya, verdict (not on SAIN-APPROVED-MODELS), clm, jevk5, clef/clef-flash (Qwen-based, banned).
+# No OPENJEV_MODEL_ROUTES: the server cannot forward to any other model.
+# Images are built locally from this repo (no prebuilt razorback16/* images are pulled):
+#   docker build -f docker/Dockerfile.base -t sain/openjev-base:cu130-torch2.13 .
+#   docker compose build && docker compose up -d
+# Check: curl -s 127.0.0.1:8080/v1/models  -> only openjev-latest, openjev-0.1, diffusiongemma-26b
 services:
   openjev:
-    build: {context: ., dockerfile: docker/Dockerfile}
-    image: razorback16/openjev:0.7.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args: {BASE_IMAGE: "sain/openjev-base:cu130-torch2.13"}
+    image: sain/openjev-gemma:0.7.0-b4339c6
     environment:
+      OPENJEV_BACKEND: vllm
+      # Weights: the founder picks one (see _sainos-plan/OPENJEV-GEMMA-CHECK.md, item 2):
+      #   nvidia/diffusiongemma-26B-A4B-it-NVFP4 @ ec4ff3df... (default; ~18 GB; calibrated by NVIDIA, see check)
+      #   google/diffusiongemma-26B-A4B-it      @ f7f5b7f5... (bf16, ~52 GB; needs a 96 GB+ GPU, e.g. Spark / RTX PRO 6000)
+      OPENJEV_MODEL: ${OPENJEV_MODEL:-nvidia/diffusiongemma-26B-A4B-it-NVFP4}
+      OPENJEV_VLLM_ARGS: ${OPENJEV_VLLM_ARGS:---revision ec4ff3df205028f4e81c954c2227f9312b3ec2ea --tokenizer-revision ec4ff3df205028f4e81c954c2227f9312b3ec2ea}
       OPENJEV_CANVAS: "64"
       OPENJEV_MAX_NUM_SEQS: ${OPENJEV_MAX_NUM_SEQS:-64}
       OPENJEV_MAX_MODEL_LEN: ${OPENJEV_MAX_MODEL_LEN:-65536}
       OPENJEV_GPU_UTIL: ${OPENJEV_GPU_UTIL:-0.9}
       OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}
       OPENJEV_ORIGIN_SECRET: ${OPENJEV_ORIGIN_SECRET:-}
-      # with the clm or jevk5 profile, add clm-v0.1=http://clm:8080 or jevk5-0.3=http://jevk5:8080
-      OPENJEV_MODEL_ROUTES: ${OPENJEV_MODEL_ROUTES:-laya-1.0=http://laya:8080,verdict-1.4=http://verdict:8080}
+      OPENJEV_MODEL_ROUTES: ""
+      HF_HUB_DISABLE_TELEMETRY: "1"
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
       - vllm-cache:/root/.cache/vllm
-      - flashinfer-cache:/root/.cache/flashinfer   # its NVFP4 MoE kernels, compiled on first start (about 4 min)
+      - flashinfer-cache:/root/.cache/flashinfer   # NVFP4 MoE kernels, compiled on first start (about 4 min)
     ports:
       - "${OPENJEV_BIND:-127.0.0.1}:8080:8080"
     ipc: host
-    deploy: &gpu
+    deploy:
       resources:
         reservations:
           devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-    restart: unless-stopped
-
-  # The encoder models take 2.5 GB (Laya) and 1.2 GB (Verdict) of GPU memory, measured at a full batch.
-  # Lower OPENJEV_GPU_UTIL to leave vLLM's neighbours that much room.
-  laya:
-    build: {context: ., dockerfile: docker/Dockerfile.laya}
-    image: razorback16/openjev-laya:0.7.0
-    environment: &encoder-env
-      # the openjev container forwards the caller's key and origin secret, so these match it
-      OPENJEV_API_KEY: ${OPENJEV_API_KEY:-}
-      OPENJEV_ORIGIN_SECRET: ${OPENJEV_ORIGIN_SECRET:-}
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-      HF_TOKEN: ${HF_TOKEN:-}
-    volumes: &hf
-      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
-    deploy: *gpu
-    restart: unless-stopped
-
-  verdict:
-    build: {context: ., dockerfile: docker/Dockerfile.verdict}
-    image: razorback16/openjev-verdict:0.7.0
-    environment: *encoder-env
-    volumes: *hf
-    deploy: *gpu
-    restart: unless-stopped
-
-  # CLM runs its own vLLM (Qwen3-8B-FP8, about 9 GB of weights), so it needs about 12 GB
-  # beside DiffusionGemma: start it with --profile clm, lower OPENJEV_GPU_UTIL for openjev,
-  # and add it to OPENJEV_MODEL_ROUTES.
-  clm:
-    build: {context: ., dockerfile: docker/Dockerfile.clm}
-    image: razorback16/openjev-clm:0.7.0
-    profiles: [clm]
-    environment:
-      <<: *encoder-env
-      OPENJEV_GPU_UTIL: ${OPENJEV_CLM_GPU_UTIL:-0.12}
-    volumes:
-      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
-      - vllm-cache:/root/.cache/vllm
-    ipc: host
-    deploy: *gpu
-    restart: unless-stopped
-
-  # JevK5 runs its own vLLM too (bf16, 8.4 GB of weights): start it with --profile jevk5 and add
-  # jevk5-0.3=http://jevk5:8080 to OPENJEV_MODEL_ROUTES, leaving it room as for CLM.
-  jevk5:
-    build: {context: ., dockerfile: docker/Dockerfile.jevk5}
-    image: razorback16/openjev-jevk5:0.7.1
-    profiles: [jevk5]
-    environment:
-      <<: *encoder-env
-      OPENJEV_GPU_UTIL: ${OPENJEV_JEVK5_GPU_UTIL:-0.12}
-    volumes:
-      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
-      - vllm-cache:/root/.cache/vllm
-    ipc: host
-    deploy: *gpu
-    restart: unless-stopped
-
-  # Clef-flash runs on vLLM in its own image (NVFP4, about 8 GiB of weights): start it with
-  # --profile clef and add clef-flash-1.0=http://clef:8080 to OPENJEV_MODEL_ROUTES, leaving it room
-  # as for CLM. OPENJEV_CLEF_BACKEND=clef serves Clef (about 20 GiB) instead, as clef-1.0.
-  clef:
-    build: {context: ., dockerfile: docker/Dockerfile.clef}
-    image: razorback16/openjev-clef:0.7.2
-    profiles: [clef]
-    environment:
-      <<: *encoder-env
-      OPENJEV_BACKEND: ${OPENJEV_CLEF_BACKEND:-clef-flash}
-      OPENJEV_GPU_UTIL: ${OPENJEV_CLEF_GPU_UTIL:-0.15}
-    volumes:
-      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
-      - vllm-cache:/root/.cache/vllm
-      - flashinfer-cache:/root/.cache/flashinfer
-    ipc: host
-    deploy: *gpu
     restart: unless-stopped
 
 volumes:
