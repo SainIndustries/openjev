@@ -36,6 +36,14 @@ SCAFFOLD = "<|channel>thought\n<channel|>"
 _SPECIAL = re.compile(r"<\|[a-z_]*>|<[a-z_]*\|>|<bos>|<eos>|<pad>", re.I)
 
 
+def _keep_alive(value):
+    """Ollama wants a number of seconds (-1 = forever) or a duration string such as "10m"."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def clean(text):
     """Caller text with Gemma prompt-structure tokens removed."""
     return _SPECIAL.sub("", text or "")
@@ -91,15 +99,19 @@ class OllamaEngine(Engine):
             async with self.slots:
                 r = await self.client.post("/api/generate", json={
                     "model": self.s.ollama_model, "prompt": prompt, "raw": True, "stream": False,
-                    "think": False, "logprobs": True, "top_logprobs": TOPK,
-                    "keep_alive": self.s.ollama_keep_alive,
+                    "logprobs": True, "top_logprobs": TOPK,
+                    "keep_alive": _keep_alive(self.s.ollama_keep_alive),
                     "options": {"temperature": 0, "num_predict": 1, "num_ctx": self.s.ollama_num_ctx}})
         finally:
             spent = model_ns.get()
             if spent is not None:
                 spent[0] += time.perf_counter_ns() - started
         if 400 <= r.status_code < 500:
-            raise Upstream(f"ollama refused the read ({r.status_code})")
+            try:
+                why = str(r.json().get("error", ""))[:200]  # Ollama's own message; it does not echo the prompt
+            except ValueError:
+                why = ""
+            raise Upstream(f"ollama refused the read ({r.status_code}): {why}")
         r.raise_for_status()
         d = r.json()
         rows = d.get("logprobs") or []
