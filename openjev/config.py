@@ -1,4 +1,8 @@
-"""Runtime settings, all from the environment."""
+"""Runtime settings, all from the environment.
+
+Modified by SAIN Industries 2026-10-14: OPENJEV_BACKEND=ollama settings and its model name
+(openjev-gemma4-e4b). See NOTICE.
+"""
 import os
 from dataclasses import dataclass, field
 
@@ -97,6 +101,13 @@ class Settings:
     clef_max_tokens: int = field(default_factory=lambda: int(_env("OPENJEV_CLEF_MAX_TOKENS", "16384")))
     clef_gpu_util: float = field(default_factory=lambda: float(_env("OPENJEV_GPU_UTIL", "0.85")))
     clef_max_num_seqs: int = field(default_factory=lambda: int(_env("OPENJEV_MAX_NUM_SEQS", "64")))
+    # SAIN: OPENJEV_BACKEND=ollama, an autoregressive Gemma 4 on Ollama (CPU). See ollama_backend.py.
+    ollama_url: str = field(default_factory=lambda: _env("OPENJEV_OLLAMA_URL", "http://127.0.0.1:11434"))
+    ollama_model: str = field(default_factory=lambda: _env("OPENJEV_OLLAMA_MODEL", "gemma4:e4b"))
+    ollama_timeout: float = field(default_factory=lambda: float(_env("OPENJEV_OLLAMA_TIMEOUT", "120")))
+    ollama_parallel: int = field(default_factory=lambda: int(_env("OPENJEV_OLLAMA_PARALLEL", "1")))
+    ollama_num_ctx: int = field(default_factory=lambda: int(_env("OPENJEV_OLLAMA_NUM_CTX", "4096")))
+    ollama_keep_alive: str = field(default_factory=lambda: _env("OPENJEV_OLLAMA_KEEP_ALIVE", "-1"))
     warmup: bool = field(default_factory=lambda: _env("OPENJEV_WARMUP", "1") != "0")
     # Other System One models served by other OpenJev containers: "name=url,name=url".
     # A request for one of them is passed through unchanged, so one origin serves all.
@@ -181,8 +192,20 @@ ENCODER_MODELS = {
 }
 
 
+# SAIN: the CPU backend serves Gemma 4 E4B under its own name, never as DiffusionGemma.
+OLLAMA_MODELS = [
+    {"name": "openjev-gemma4-e4b",
+     "description": "OpenJev decision logic on Gemma 4 E4B (Google, Apache-2.0), autoregressive, via Ollama on CPU. "
+                    "Option-shuffle re-reads instead of diffusion noise re-reads.",
+     "release_date": "2026-10-14"},
+]
+
+
 def served_models(backend):
     """(the model version a response names, the names a request may use, the /v1/models list)."""
+    if backend == "ollama":
+        m = OLLAMA_MODELS[0]
+        return m["name"], {m["name"]} | SDK_ALIASES, list(OLLAMA_MODELS)
     if backend in ENCODER_MODELS:
         m = ENCODER_MODELS[backend]
         return m["name"], {m["name"]} | SDK_ALIASES, [m]

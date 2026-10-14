@@ -1,0 +1,17 @@
+OpenJev (https://github.com/razorback16/openjev)
+Copyright the OpenJev authors (razorback16 and contributors). Licensed under the Apache License 2.0 (LICENSE).
+Upstream ships no NOTICE file; this one records attribution and SAIN's changes.
+
+Modified by SAIN Industries (branch sain/gemma-only, from upstream b4339c640f5331ef75098637d1be2c787715ee88):
+2026-10-14
+- docker-compose.yml: DiffusionGemma only (no Laya, Verdict, CLM, JevK5, Clef; no model routes; local images;
+  pinned weights revision). Upstream Dockerfiles for the removed backends moved to docker/disabled/.
+- NEW openjev/ollama_backend.py: OPENJEV_BACKEND=ollama, OpenJev's decision logic on an autoregressive
+  Gemma 4 (E4B) served by Ollama on CPU: teacher-forced "id: label" reads from next-token logprobs,
+  option-shuffled re-reads in place of diffusion noise re-reads, prompt-structure tokens stripped from
+  caller text. Served as model "openjev-gemma4-e4b".
+- openjev/config.py: OPENJEV_OLLAMA_* settings; the openjev-gemma4-e4b model entry.
+- openjev/api.py: the ollama backend option; no chat routes on it.
+- NEW tests/test_ollama_backend.py.
+
+Gemma 4 and DiffusionGemma weights: Google, Apache-2.0.

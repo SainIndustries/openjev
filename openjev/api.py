@@ -7,6 +7,9 @@ Optional request fields beyond that contract (images, steps, samples, think,
 sequential) are ignored by the SDKs and change nothing when left out.
 POST /v1/chat/completions (openjev.chat) serves ordinary text generation.
 
+Modified by SAIN Industries 2026-10-14: OPENJEV_BACKEND=ollama (openjev.ollama_backend); no chat
+routes on that backend. See NOTICE.
+
 OPENJEV_BACKEND picks what answers: DiffusionGemma through vLLM or MLX, or one
 of the small encoder models (openjev.encoders). A request for a model listed in
 OPENJEV_MODEL_ROUTES is passed through to the OpenJev container serving it.
@@ -158,9 +161,10 @@ def semantic_error(loc, msg, request=None):
 
 def create_app(settings=None, tokenizer=None):
     settings = settings or Settings()
-    if settings.backend not in ("vllm", "mlx", *ENCODER_MODELS):
-        raise ValueError(f"unknown backend {settings.backend!r}; use one of vllm, mlx, {', '.join(ENCODER_MODELS)}")
+    if settings.backend not in ("vllm", "mlx", "ollama", *ENCODER_MODELS):
+        raise ValueError(f"unknown backend {settings.backend!r}; use one of vllm, mlx, ollama, {', '.join(ENCODER_MODELS)}")
     mlx = settings.backend == "mlx"
+    ollama = settings.backend == "ollama"
     encoder = settings.backend in ENCODER_MODELS
     model_version, model_names, own_models = served_models(settings.backend)
     known = {m["name"]: m for m in ENCODER_MODELS.values()}
@@ -175,6 +179,13 @@ def create_app(settings=None, tokenizer=None):
             app.state.engine = ENGINES[settings.backend](settings)
             if hasattr(app.state.engine, "start"):  # Clef starts vLLM in this process
                 await app.state.engine.start()
+            yield
+            await app.state.engine.close()
+            await app.state.routes.aclose()
+            return
+        if ollama:
+            from .ollama_backend import OllamaEngine
+            app.state.engine = OllamaEngine(settings)
             yield
             await app.state.engine.close()
             await app.state.routes.aclose()
@@ -315,7 +326,7 @@ def create_app(settings=None, tokenizer=None):
         keep = {h: result.headers[h] for h in ("retry-after",) if h in result.headers}
         return JSONResponse(oai_error_body(result.status_code, payload), status_code=result.status_code, headers=keep)
 
-    if not encoder:
+    if not encoder and not ollama:
         add_chat_routes(app)
 
     return app
